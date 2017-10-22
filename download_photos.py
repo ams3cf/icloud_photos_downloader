@@ -16,7 +16,6 @@ from authentication import authenticate
 MAX_RETRIES = 5
 WAIT_SECONDS = 5
 
-
 CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
 @click.command(context_settings=CONTEXT_SETTINGS, options_metavar='<options>')
 @click.argument('directory', type=click.Path(exists=True), metavar='<directory>')
@@ -52,7 +51,6 @@ CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
               help='Only prints the filenames of all files that will be downloaded. ' + \
                 '(Does not download any files.)',
               is_flag=True)
-
 @click.option('--smtp-username',
               help='Your SMTP username, for sending email notifications when two-step authentication expires.',
               metavar='<smtp_username>')
@@ -72,6 +70,15 @@ CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
               help='Pass this flag to disable TLS for SMTP (TLS is required for Gmail)',
               metavar='<smtp_no_tls>',
               is_flag=True)
+@click.option('--loop',
+              help='Set this flag to run the download in a continuous loop with a delay',
+              metavar='<loop>',
+              is_flag=True)
+@click.option('--loop-delay',
+              help='The number of seconds to delay while in loop mode',
+              metavar='<loop_delay>',
+              type=click.IntRange(0),
+              default=60)              
 @click.option('--notification-email',
               help='Email address where you would like to receive email notifications. Default: SMTP username',
               metavar='<notification_email>')
@@ -81,120 +88,130 @@ def download(directory, username, password, size, recent, \
     until_found, download_videos, force_size, auto_delete, \
     only_print_filenames, \
     smtp_username, smtp_password, smtp_host, smtp_port, smtp_no_tls, \
-    notification_email):
+    notification_email, loop, loop_delay):
     """Download all iCloud photos to a local directory"""
 
-    if not notification_email:
-        notification_email = smtp_username
+    shouldContinue = True
 
-    icloud = authenticate(username, password, \
-        smtp_username, smtp_password, smtp_host, smtp_port, smtp_no_tls, notification_email)
+    while shouldContinue:
 
-    if hasattr(directory, 'decode'):
-        directory = directory.decode('utf-8')
+        if not notification_email:
+            notification_email = smtp_username
 
-    directory = os.path.normpath(directory)
+        icloud = authenticate(username, password, \
+            smtp_username, smtp_password, smtp_host, smtp_port, smtp_no_tls, notification_email)
 
-    if not only_print_filenames:
-        print("Looking up all photos...")
-    photos = icloud.photos.all
-    photos_count = len(photos)
+        if hasattr(directory, 'decode'):
+            directory = directory.decode('utf-8')
 
-    # Optional: Only download the x most recent photos.
-    if recent is not None:
-        photos_count = recent
-        photos = itertools.islice(photos, recent)
+        directory = os.path.normpath(directory)
 
-    kwargs = {'total': photos_count}
+        if not only_print_filenames:
+            print("Looking up all photos...")
+        photos = icloud.photos.all
+        photos_count = len(photos)
 
-    if until_found is not None:
-        del kwargs['total']
-        photos_count = '???'
+        # Optional: Only download the x most recent photos.
+        if recent is not None:
+            photos_count = recent
+            photos = itertools.islice(photos, recent)
 
-        # ensure photos iterator doesn't have a known length
-        photos = (p for p in photos)
+        kwargs = {'total': photos_count}
 
-    if not only_print_filenames:
-        if download_videos:
-            print("Downloading %s %s photos and videos to %s/ ..." % (photos_count, size, directory))
+        if until_found is not None:
+            del kwargs['total']
+            photos_count = '???'
+
+            # ensure photos iterator doesn't have a known length
+            photos = (p for p in photos)
+
+        if not only_print_filenames:
+            if download_videos:
+                print("Downloading %s %s photos and videos to %s/ ..." % (photos_count, size, directory))
+            else:
+                print("Downloading %s %s photos to %s/ ..." % (photos_count, size, directory))
+
+        consecutive_files_found = 0
+        if only_print_filenames:
+            progress_bar = photos
         else:
-            print("Downloading %s %s photos to %s/ ..." % (photos_count, size, directory))
+            progress_bar = tqdm(photos, **kwargs)
 
-    consecutive_files_found = 0
-    if only_print_filenames:
-        progress_bar = photos
-    else:
-        progress_bar = tqdm(photos, **kwargs)
+        for photo in progress_bar:
+            for _ in range(MAX_RETRIES):
+                try:
+                    if not download_videos \
+                        and not photo.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        if not only_print_filenames:
+                            progress_bar.set_description(
+                                "Skipping %s, only downloading photos." % photo.filename)
+                        continue
 
-    for photo in progress_bar:
-        for _ in range(MAX_RETRIES):
-            try:
-                if not download_videos \
-                    and not photo.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    if not only_print_filenames:
-                        progress_bar.set_description(
-                            "Skipping %s, only downloading photos." % photo.filename)
-                    continue
+                    created_date = photo.created
 
-                created_date = photo.created
+                    date_path = '{:%Y/%m/%d}'.format(created_date)
+                    download_dir = os.path.join(directory, date_path)
 
-                date_path = '{:%Y/%m/%d}'.format(created_date)
-                download_dir = os.path.join(directory, date_path)
+                    if not os.path.exists(download_dir):
+                        os.makedirs(download_dir)
 
-                if not os.path.exists(download_dir):
-                    os.makedirs(download_dir)
+                    download_path = local_download_path(photo, size, download_dir)
+                    if os.path.isfile(download_path):
+                        if until_found is not None:
+                            consecutive_files_found += 1
+                        if not only_print_filenames:
+                            progress_bar.set_description("%s already exists." % truncate_middle(download_path, 96))
+                        break
 
-                download_path = local_download_path(photo, size, download_dir)
-                if os.path.isfile(download_path):
+                    if only_print_filenames:
+                        print(download_path)
+                    else:
+                        download_photo(photo, download_path, size, force_size, download_dir, progress_bar)
+
                     if until_found is not None:
-                        consecutive_files_found += 1
-                    if not only_print_filenames:
-                        progress_bar.set_description("%s already exists." % truncate_middle(download_path, 96))
+                        consecutive_files_found = 0
                     break
 
-                if only_print_filenames:
-                    print(download_path)
-                else:
-                    download_photo(photo, download_path, size, force_size, download_dir, progress_bar)
+                except (requests.exceptions.ConnectionError, socket.timeout):
+                    if not only_print_filenames:
+                        tqdm.write('Connection failed, retrying after %d seconds...' % WAIT_SECONDS)
+                    time.sleep(WAIT_SECONDS)
 
-                if until_found is not None:
-                    consecutive_files_found = 0
+            else:
+                if not only_print_filenames:
+                    tqdm.write("Could not process %s! Maybe try again later." % photo.filename)
+
+            if until_found is not None and consecutive_files_found >= until_found:
+                if not only_print_filenames:
+                    tqdm.write('Found %d consecutive previusly downloaded photos. Exiting' % until_found)
+                    progress_bar.close()
                 break
 
-            except (requests.exceptions.ConnectionError, socket.timeout):
-                if not only_print_filenames:
-                    tqdm.write('Connection failed, retrying after %d seconds...' % WAIT_SECONDS)
-                time.sleep(WAIT_SECONDS)
+        if not only_print_filenames:
+            print("All photos have been downloaded!")
 
+            if auto_delete:
+                print("Deleting any files found in 'Recently Deleted'...")
+
+                recently_deleted = icloud.photos.albums['Recently Deleted']
+
+                for media in recently_deleted:
+                    created_date = media.created
+                    date_path = '{:%Y/%m/%d}'.format(created_date)
+                    download_dir = os.path.join(directory, date_path)
+
+                    filename = filename_with_size(media, size)
+                    path = os.path.join(download_dir, filename)
+
+                    if os.path.exists(path):
+                        print("Deleting %s!" % path)
+                        os.remove(path)
+        
+        if not loop:
+            shouldContinue = False
         else:
-            if not only_print_filenames:
-                tqdm.write("Could not process %s! Maybe try again later." % photo.filename)
-
-        if until_found is not None and consecutive_files_found >= until_found:
-            if not only_print_filenames:
-                tqdm.write('Found %d consecutive previusly downloaded photos. Exiting' % until_found)
-                progress_bar.close()
-            break
-
-    if not only_print_filenames:
-        print("All photos have been downloaded!")
-
-        if auto_delete:
-            print("Deleting any files found in 'Recently Deleted'...")
-
-            recently_deleted = icloud.photos.albums['Recently Deleted']
-
-            for media in recently_deleted:
-                created_date = media.created
-                date_path = '{:%Y/%m/%d}'.format(created_date)
-                download_dir = os.path.join(directory, date_path)
-
-                filename = filename_with_size(media, size)
-                path = os.path.join(download_dir, filename)
-
-                if os.path.exists(path):
-                    print("Deleting %s!" % path)
-                    os.remove(path)
+            print("Sleep mode selected... I'll wait", loop_delay, "seconds")
+            time.sleep(loop_delay)
 
 def truncate_middle(s, n):
     if len(s) <= n:
