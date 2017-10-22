@@ -112,6 +112,8 @@ you can clear a stored password using the `--delete-from-keyring` command-line o
                                         Email address where you would like to
                                         receive email notifications. Default: SMTP
                                         username
+        --loop                          Flag that indicates the process should continuously run in a loop with a delay
+        --loop_delay                    The number of seconds to wait between each iteration
         -h, --help                      Show this message and exit.
 
 
@@ -172,3 +174,4 @@ $ docker run -it --rm --name icloud -v $(pwd)/Photos:/data icloud_photos_downloa
     --auto-delete \
     /data
 ```
+
