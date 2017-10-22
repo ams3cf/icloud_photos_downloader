@@ -73,6 +73,8 @@ you can clear a stored password using the `--delete-from-keyring` command-line o
                            [--smtp-port <smtp_port>]
                            [--smtp-no-tls]
                            [--notification-email <notification_email>]
+                           [--loop]
+                           [--loop-delay <integer>]
 
     Options:
         --username <username>           Your iCloud username or email address
